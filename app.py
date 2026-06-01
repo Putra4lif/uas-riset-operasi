@@ -124,8 +124,12 @@ def alloc_matrix_df(problem: TransportationProblem, alloc) -> pd.DataFrame:
     return pd.concat([data, margin])
 
 
-def route_df(problem: TransportationProblem, alloc) -> pd.DataFrame:
-    """Rincian rute terpakai: Rute | Jumlah | Biaya/unit | Subtotal."""
+def route_df(problem: TransportationProblem, alloc,
+             satuan_q: str = "", satuan_c: str = "") -> pd.DataFrame:
+    """Rincian rute terpakai: Rute | Jumlah | Biaya/unit | Subtotal (memuat satuan)."""
+    qh = f"Jumlah ({satuan_q})" if satuan_q else "Jumlah"
+    ch = f"Biaya/unit ({satuan_c})" if satuan_c else "Biaya/unit"
+    sh = f"Subtotal ({satuan_c})" if satuan_c else "Subtotal"
     baris = []
     for i in range(problem.m):
         for j in range(problem.n):
@@ -133,9 +137,9 @@ def route_df(problem: TransportationProblem, alloc) -> pd.DataFrame:
             if q > 1e-9:
                 baris.append({
                     "Rute": f"{problem.sources[i]} → {problem.destinations[j]}",
-                    "Jumlah": q,
-                    "Biaya/unit": problem.cost[i][j],
-                    "Subtotal": q * problem.cost[i][j],
+                    qh: q,
+                    ch: problem.cost[i][j],
+                    sh: q * problem.cost[i][j],
                 })
     return pd.DataFrame(baris)
 
@@ -232,30 +236,34 @@ def _style_ws(ws, title: str, tab_color: str, highlight_inner=None) -> None:
     ws.sheet_properties.tabColor = tab_color
 
 
-def build_excel(sol) -> bytes:
+def build_excel(sol, satuan_q: str = "", satuan_c: str = "") -> bytes:
     """Susun workbook .xlsx multi-sheet yang sudah diformat rapi (judul, header, dll.)."""
     p = sol.problem
     n_iter = len([it for it in sol.iterations if not it.optimal])
     ringkasan = pd.DataFrame({
         "Keterangan": [
             "Metode solusi awal", "Biaya solusi awal", "Biaya optimal",
-            "Penghematan", "Jumlah iterasi", "Penyeimbangan",
+            "Penghematan", "Jumlah iterasi", "Satuan jumlah", "Satuan biaya",
+            "Penyeimbangan",
         ],
         "Nilai": [
             sol.initial_method, sol.initial_cost, sol.optimal_cost,
-            sol.savings, n_iter, sol.balance_note,
+            sol.savings, n_iter, satuan_q or "-", satuan_c or "-",
+            sol.balance_note,
         ],
     })
+    judul_alloc = (f"Alokasi Optimal (dalam {satuan_q})" if satuan_q
+                   else "Alokasi Optimal (unit dikirim)")
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         ringkasan.to_excel(writer, sheet_name="Ringkasan", index=False, startrow=1)
         alloc_matrix_df(p, sol.optimal).to_excel(writer, sheet_name="Alokasi Optimal", startrow=1)
-        route_df(p, sol.optimal).to_excel(writer, sheet_name="Rincian Rute", index=False, startrow=1)
+        route_df(p, sol.optimal, satuan_q, satuan_c).to_excel(
+            writer, sheet_name="Rincian Rute", index=False, startrow=1)
         steps_df(p, sol).to_excel(writer, sheet_name="Langkah", index=False, startrow=1)
         s = writer.sheets
         _style_ws(s["Ringkasan"], "Ringkasan Hasil — Metode Transportasi", "18181B")
-        _style_ws(s["Alokasi Optimal"], "Alokasi Optimal (unit dikirim)", "16A34A",
-                  highlight_inner=(p.m, p.n))
+        _style_ws(s["Alokasi Optimal"], judul_alloc, "16A34A", highlight_inner=(p.m, p.n))
         _style_ws(s["Rincian Rute"], "Rincian Biaya per Rute", "18181B")
         _style_ws(s["Langkah"], "Langkah Optimasi (MODI)", "18181B")
     return buf.getvalue()
@@ -279,8 +287,9 @@ def _esc(s) -> str:
     return str(s).replace('"', "'")
 
 
-def flow_diagram_dot(problem: TransportationProblem, alloc) -> str:
+def flow_diagram_dot(problem: TransportationProblem, alloc, satuan_q: str = "") -> str:
     """Bangun kode DOT (Graphviz) diagram aliran: sumber (kiri) → tujuan (kanan)."""
+    sat = f" {satuan_q}" if satuan_q else ""
     out = [
         "digraph {",
         'rankdir=LR; bgcolor="transparent"; nodesep=0.28; ranksep=1.3;',
@@ -289,12 +298,12 @@ def flow_diagram_dot(problem: TransportationProblem, alloc) -> str:
     ]
     for i in range(problem.m):
         out.append(
-            f'S{i} [label="{_esc(problem.sources[i])}\\n({problem.supply[i]:g})" '
+            f'S{i} [label="{_esc(problem.sources[i])}\\n({problem.supply[i]:g}{sat})" '
             'fillcolor="#f4f4f5" color="#e4e4e7"];'
         )
     for j in range(problem.n):
         out.append(
-            f'D{j} [label="{_esc(problem.destinations[j])}\\n({problem.demand[j]:g})" '
+            f'D{j} [label="{_esc(problem.destinations[j])}\\n({problem.demand[j]:g}{sat})" '
             'fillcolor="#18181b" fontcolor="#fafafa" color="#18181b"];'
         )
     for i in range(problem.m):
@@ -327,12 +336,11 @@ def tabel_alokasi(problem: TransportationProblem, alloc, judul: str):
     st.dataframe(sty, width="stretch")
 
 
-def tabel_biaya_rute(problem: TransportationProblem, alloc):
-    df = route_df(problem, alloc)
-    st.dataframe(
-        df.style.format({"Jumlah": "{:g}", "Biaya/unit": "{:g}", "Subtotal": "{:g}"}),
-        width="stretch", hide_index=True,
-    )
+def tabel_biaya_rute(problem: TransportationProblem, alloc,
+                     satuan_q: str = "", satuan_c: str = ""):
+    df = route_df(problem, alloc, satuan_q, satuan_c)
+    fmt_map = {c: "{:g}" for c in df.columns if c != "Rute"}
+    st.dataframe(df.style.format(fmt_map), width="stretch", hide_index=True)
 
 
 def tampilkan_iterasi(problem: TransportationProblem, it):
@@ -434,6 +442,16 @@ with st.sidebar:
     st.session_state.verifikasi = st.checkbox(
         "Verifikasi dengan scipy", value=st.session_state.get("verifikasi", True)
     )
+    st.selectbox(
+        "Satuan jumlah", ["ton", "kg", "kuintal", "unit", "liter", "karung", "dus", "m³"],
+        index=0, key="satuan_jumlah", accept_new_options=True,
+        help="Satuan untuk kapasitas, permintaan, & alokasi (boleh ketik sendiri).",
+    )
+    st.selectbox(
+        "Satuan biaya", ["ribu Rp", "Rp", "juta Rp", "USD"],
+        index=0, key="satuan_biaya", accept_new_options=True,
+        help="Satuan biaya angkut per 1 satuan jumlah (boleh ketik sendiri).",
+    )
     if st.button("Muat contoh PT Sentosa Beton", width="stretch"):
         muat_contoh()
         st.rerun()
@@ -447,19 +465,38 @@ with st.sidebar:
 if open_about:
     about_dialog()
 
-ui.section("package", "Sumber (asal) & kapasitas", "Langkah 1 — daftar pabrik/gudang dan kapasitasnya")
+satuan_q = st.session_state.get("satuan_jumlah", "ton")
+satuan_c = st.session_state.get("satuan_biaya", "ribu Rp")
+sq_fmt = satuan_q.replace("%", "%%")  # escape agar aman dipakai di printf format kolom
+sc_fmt = satuan_c.replace("%", "%%")
+
+ui.section("package", "Sumber (asal) & kapasitas",
+           "Langkah 1 — daftar pabrik/gudang & kapasitasnya")
 src_df = st.data_editor(
     pd.DataFrame({"Sumber": st.session_state.src_names, "Kapasitas": st.session_state.src_supply}),
     num_rows="dynamic", width="stretch", key="ed_src",
+    column_config={
+        "Kapasitas": st.column_config.NumberColumn(
+            "Kapasitas", format=f"%g {sq_fmt}", min_value=0,
+            help=f"Kapasitas pasokan (dalam {satuan_q}).",
+        ),
+    },
 )
 src_df = src_df.dropna(how="all")
 src_names = [str(x) for x in src_df["Sumber"].fillna("").tolist()]
 src_supply = [to_num(x) for x in src_df["Kapasitas"].tolist()]
 
-ui.section("map-pin", "Tujuan & permintaan", "Langkah 2 — daftar kota/wilayah dan permintaannya")
+ui.section("map-pin", "Tujuan & permintaan",
+           "Langkah 2 — daftar kota/wilayah & permintaannya")
 dst_df = st.data_editor(
     pd.DataFrame({"Tujuan": st.session_state.dst_names, "Permintaan": st.session_state.dst_demand}),
     num_rows="dynamic", width="stretch", key="ed_dst",
+    column_config={
+        "Permintaan": st.column_config.NumberColumn(
+            "Permintaan", format=f"%g {sq_fmt}", min_value=0,
+            help=f"Permintaan tujuan (dalam {satuan_q}).",
+        ),
+    },
 )
 dst_df = dst_df.dropna(how="all")
 dst_names = [str(x) for x in dst_df["Tujuan"].fillna("").tolist()]
@@ -470,15 +507,20 @@ st.session_state.dst_names, st.session_state.dst_demand = dst_names, dst_demand
 m, n = len(src_names), len(dst_names)
 resize_cost(m, n)
 
-ui.section("grid", "Biaya angkut per unit", "Langkah 3 — biaya dari tiap sumber ke tiap tujuan")
+ui.section("grid", "Biaya angkut per unit",
+           f"Langkah 3 — biaya tiap sumber → tujuan ({satuan_c} per {satuan_q})")
 cost_df = pd.DataFrame(st.session_state.cost, index=unik(src_names), columns=unik(dst_names))
-cost_edit = st.data_editor(cost_df, width="stretch", key="ed_cost")
+cost_cfg = {
+    c: st.column_config.NumberColumn(c, format=f"%g {sc_fmt}", min_value=0)
+    for c in cost_df.columns
+}
+cost_edit = st.data_editor(cost_df, width="stretch", key="ed_cost", column_config=cost_cfg)
 st.session_state.cost = [[to_num(c) for c in row] for row in cost_edit.values.tolist()]
 
 total_s, total_d = sum(src_supply), sum(dst_demand)
 ui.stat_cards([
-    {"label": "Total kapasitas", "value": fmt(total_s), "icon": "layers", "sub": "Penawaran (supply)"},
-    {"label": "Total permintaan", "value": fmt(total_d), "icon": "package", "sub": "Permintaan (demand)"},
+    {"label": "Total kapasitas", "value": f"{fmt(total_s)} {satuan_q}", "icon": "layers", "sub": "Penawaran (supply)"},
+    {"label": "Total permintaan", "value": f"{fmt(total_d)} {satuan_q}", "icon": "package", "sub": "Permintaan (demand)"},
 ])
 if abs(total_s - total_d) > 1e-9:
     ui.alert("info", "info", "Tidak seimbang",
@@ -510,11 +552,12 @@ elif st.session_state.get("sol") is not None:
 
     n_iter = len([it for it in sol.iterations if not it.optimal])
     ui.stat_cards([
-        {"label": "Biaya optimal", "value": fmt(sol.optimal_cost), "icon": "money", "sub": "Total minimum"},
+        {"label": "Biaya optimal", "value": fmt(sol.optimal_cost), "icon": "money",
+         "sub": f"Total minimum ({satuan_c})"},
         {"label": "Biaya solusi awal", "value": fmt(sol.initial_cost), "icon": "calculator",
-         "sub": sol.initial_method},
+         "sub": f"{sol.initial_method} ({satuan_c})"},
         {"label": "Penghematan", "value": fmt(sol.savings), "icon": "trending-down",
-         "accent": "green" if sol.savings > 1e-9 else "", "sub": "Awal → optimal"},
+         "accent": "green" if sol.savings > 1e-9 else "", "sub": f"Awal → optimal ({satuan_c})"},
         {"label": "Jumlah iterasi", "value": str(n_iter), "icon": "repeat", "sub": "MODI"},
     ])
 
@@ -524,7 +567,7 @@ elif st.session_state.get("sol") is not None:
             ui.alert("warning", "triangle-alert", "Verifikasi dilewati", ref["message"])
         elif ref["success"] and abs(ref["cost"] - sol.optimal_cost) < 1e-4:
             ui.alert("success", "badge-check", "Terverifikasi",
-                     f"Hasil cocok dengan solver LP scipy (biaya = {fmt(ref['cost'])}).")
+                     f"Hasil cocok dengan solver LP scipy (biaya = {fmt(ref['cost'])} {satuan_c}).")
         else:
             ui.alert("destructive", "triangle-alert", "Tidak cocok dengan scipy",
                      f"scipy = {ref['cost']}. Periksa kembali implementasi.")
@@ -533,7 +576,8 @@ elif st.session_state.get("sol") is not None:
     dl1, dl2, _sp = st.columns([1, 1, 2])
     try:
         dl1.download_button(
-            "Excel (.xlsx)", build_excel(sol), file_name="hasil_transportasi.xlsx",
+            "Excel (.xlsx)", build_excel(sol, satuan_q, satuan_c),
+            file_name="hasil_transportasi.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             width="stretch",
         )
@@ -552,8 +596,8 @@ elif st.session_state.get("sol") is not None:
         "Solusi Optimal", "Perbandingan Metode", "Diagram Aliran",
     ])
     with tab1:
-        tabel_alokasi(sol.problem, sol.initial, f"Alokasi awal — {sol.initial_method}")
-        ui.metric("calculator", "Total biaya solusi awal", fmt(sol.initial_cost))
+        tabel_alokasi(sol.problem, sol.initial, f"Alokasi awal — {sol.initial_method} (dalam {satuan_q})")
+        ui.metric("calculator", f"Total biaya solusi awal ({satuan_c})", fmt(sol.initial_cost))
     with tab2:
         langkah = [it for it in sol.iterations if not it.optimal]
         if not langkah:
@@ -566,9 +610,9 @@ elif st.session_state.get("sol") is not None:
             ui.alert("success", "circle-check", "Optimal tercapai",
                      "Semua opportunity cost ≥ 0.")
     with tab3:
-        tabel_alokasi(sol.problem, sol.optimal, "Alokasi optimal")
-        tabel_biaya_rute(sol.problem, sol.optimal)
-        ui.metric("money", "Total biaya minimum", fmt(sol.optimal_cost), accent="green")
+        tabel_alokasi(sol.problem, sol.optimal, f"Alokasi optimal (dalam {satuan_q})")
+        tabel_biaya_rute(sol.problem, sol.optimal, satuan_q, satuan_c)
+        ui.metric("money", f"Total biaya minimum ({satuan_c})", fmt(sol.optimal_cost), accent="green")
     with tab4:
         st.caption("Perbandingan ketiga metode solusi awal pada masalah yang sama "
                    "(semuanya menuju biaya optimal yang identik).")
@@ -577,9 +621,9 @@ elif st.session_state.get("sol") is not None:
             cmp.style.format({"Biaya awal": "{:g}", "Biaya optimal": "{:g}"}),
             width="stretch", hide_index=True,
         )
-        st.caption("Biaya solusi awal tiap metode (makin rendah makin dekat ke optimal):")
+        st.caption(f"Biaya solusi awal tiap metode dalam {satuan_c} (makin rendah makin dekat ke optimal):")
         st.bar_chart(cmp.set_index("Metode")[["Biaya awal"]])
     with tab5:
-        st.caption("Aliran distribusi optimal: sumber (kiri) → tujuan (kanan); "
-                   "angka pada panah = jumlah unit yang dikirim.")
-        st.graphviz_chart(flow_diagram_dot(sol.problem, sol.optimal))
+        st.caption(f"Aliran distribusi optimal: sumber (kiri) → tujuan (kanan); "
+                   f"angka pada panah = jumlah ({satuan_q}) yang dikirim.")
+        st.graphviz_chart(flow_diagram_dot(sol.problem, sol.optimal, satuan_q))

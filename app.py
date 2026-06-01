@@ -10,6 +10,7 @@ optimal, diverifikasi otomatis dengan scipy. Seluruh ikon memakai Lucide (shadcn
 """
 from __future__ import annotations
 
+import io
 import math
 import os
 
@@ -17,7 +18,7 @@ import pandas as pd
 import streamlit as st
 
 import ui
-from solver import load_case, solve, verify_with_scipy
+from solver import METHODS, load_case, solve, verify_with_scipy
 from solver.model import TransportationProblem
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -99,43 +100,32 @@ def resize_cost(m: int, n: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Render tabel
+# Pembangun DataFrame (dipakai bersama oleh UI & ekspor)
 # --------------------------------------------------------------------------- #
-def tabel_alokasi(problem: TransportationProblem, alloc, judul: str):
+def alloc_matrix_df(problem: TransportationProblem, alloc) -> pd.DataFrame:
+    """Matriks alokasi m x n + marjin Kapasitas (kolom) & Permintaan (baris).
+
+    Label marjin dibuat unik agar tak menimpa data bila pengguna menamai
+    tujuan "Kapasitas" atau sumber "Permintaan".
+    """
     src = unik(problem.sources)
     dst = unik(problem.destinations)
-    # Label margin dibuat unik agar tak menimpa kolom/baris data bila pengguna
-    # kebetulan menamai tujuan "Kapasitas" atau sumber "Permintaan".
     cap = _label_unik("Kapasitas", set(dst))
     dem = _label_unik("Permintaan", set(src))
-
     data = pd.DataFrame(
         [[alloc.alloc[i][j] for j in range(problem.n)] for i in range(problem.m)],
         index=src, columns=dst,
     )
-    data[cap] = list(problem.supply)  # cap dijamin kolom baru (tak bentrok)
+    data[cap] = list(problem.supply)
     margin = pd.DataFrame(
         [list(problem.demand) + [problem.total_demand()]],
         index=[dem], columns=list(dst) + [cap],
     )
-    df = pd.concat([data, margin])  # gabung berdasar posisi, bukan label
-
-    def sorot(val):
-        return (
-            "background-color:#dcfce7;color:#166534;font-weight:600"
-            if isinstance(val, (int, float)) and val > 1e-9 else ""
-        )
-
-    st.caption(judul)
-    # subset sudah mengecualikan baris/kolom margin (yang terakhir), jadi cukup sorot semua.
-    sty = df.style.apply(
-        lambda col: [sorot(v) for v in col],
-        axis=0, subset=(df.index[:-1], df.columns[:-1]),
-    ).format("{:g}")
-    st.dataframe(sty, width="stretch")
+    return pd.concat([data, margin])
 
 
-def tabel_biaya_rute(problem: TransportationProblem, alloc):
+def route_df(problem: TransportationProblem, alloc) -> pd.DataFrame:
+    """Rincian rute terpakai: Rute | Jumlah | Biaya/unit | Subtotal."""
     baris = []
     for i in range(problem.m):
         for j in range(problem.n):
@@ -147,7 +137,198 @@ def tabel_biaya_rute(problem: TransportationProblem, alloc):
                     "Biaya/unit": problem.cost[i][j],
                     "Subtotal": q * problem.cost[i][j],
                 })
-    df = pd.DataFrame(baris)
+    return pd.DataFrame(baris)
+
+
+def steps_df(problem: TransportationProblem, sol) -> pd.DataFrame:
+    """Ringkasan tiap iterasi optimasi (untuk ditampilkan / diekspor)."""
+    rows = []
+    for it in sol.iterations:
+        if it.optimal or it.entering is None:
+            continue
+        ei, ej = it.entering
+        li, lj = it.leaving
+        rows.append({
+            "Iterasi": it.index,
+            "Biaya saat ini": it.total_cost,
+            "Sel masuk": f"{problem.sources[ei]} → {problem.destinations[ej]}",
+            "Opportunity cost": it.reduced[it.entering],
+            "Theta (digeser)": it.theta,
+            "Sel keluar": f"{problem.sources[li]} → {problem.destinations[lj]}",
+        })
+    if not rows:
+        rows = [{
+            "Iterasi": "-", "Biaya saat ini": sol.optimal_cost,
+            "Sel masuk": "(solusi awal sudah optimal)", "Opportunity cost": "-",
+            "Theta (digeser)": "-", "Sel keluar": "-",
+        }]
+    return pd.DataFrame(rows)
+
+
+# --------------------------------------------------------------------------- #
+# Ekspor, perbandingan metode, & diagram aliran
+# --------------------------------------------------------------------------- #
+def _style_ws(ws, title: str, tab_color: str, highlight_inner=None) -> None:
+    """Format satu worksheet: judul, header berwarna, border, format angka, lebar kolom.
+
+    Tabel ditulis mulai baris 2 (header) sehingga baris 1 dipakai untuk judul.
+    highlight_inner=(m, n): sorot sel alokasi terpakai (>0) di blok m x n bagian dalam.
+    """
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    n_col, n_row, header_row = ws.max_column, ws.max_row, 2
+    thin = Side(style="thin", color="E4E4E7")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Judul (baris 1), digabung selebar tabel.
+    judul = ws.cell(row=1, column=1, value=title)
+    judul.font = Font(size=13, bold=True, color="18181B")
+    judul.alignment = Alignment(vertical="center")
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_col)
+    ws.row_dimensions[1].height = 22
+
+    # Baris header (latar gelap, teks putih).
+    for c in range(1, n_col + 1):
+        cell = ws.cell(row=header_row, column=c)
+        cell.fill = PatternFill("solid", fgColor="18181B")
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+
+    # Sel data: border, format angka ribuan, rata kanan utk numerik.
+    for r in range(header_row + 1, n_row + 1):
+        for c in range(1, n_col + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.border = border
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "#,##0.###"
+                cell.alignment = Alignment(horizontal="right")
+
+    # Sorot sel alokasi terpakai (>0) hijau.
+    if highlight_inner:
+        m, n = highlight_inner
+        fill = PatternFill("solid", fgColor="DCFCE7")
+        fnt = Font(color="166534", bold=True)
+        for r in range(header_row + 1, header_row + 1 + m):   # baris sumber
+            for c in range(2, 2 + n):                          # kolom tujuan
+                cell = ws.cell(row=r, column=c)
+                if isinstance(cell.value, (int, float)) and cell.value > 1e-9:
+                    cell.fill = fill
+                    cell.font = fnt
+
+    # Lebar kolom otomatis (abaikan baris judul agar kolom A tak melebar).
+    for c in range(1, n_col + 1):
+        longest = max(
+            (len(str(ws.cell(row=r, column=c).value))
+             for r in range(header_row, n_row + 1)
+             if ws.cell(row=r, column=c).value is not None),
+            default=10,
+        )
+        ws.column_dimensions[get_column_letter(c)].width = min(max(longest + 2, 11), 48)
+
+    ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
+    ws.sheet_view.showGridLines = False
+    ws.sheet_properties.tabColor = tab_color
+
+
+def build_excel(sol) -> bytes:
+    """Susun workbook .xlsx multi-sheet yang sudah diformat rapi (judul, header, dll.)."""
+    p = sol.problem
+    n_iter = len([it for it in sol.iterations if not it.optimal])
+    ringkasan = pd.DataFrame({
+        "Keterangan": [
+            "Metode solusi awal", "Biaya solusi awal", "Biaya optimal",
+            "Penghematan", "Jumlah iterasi", "Penyeimbangan",
+        ],
+        "Nilai": [
+            sol.initial_method, sol.initial_cost, sol.optimal_cost,
+            sol.savings, n_iter, sol.balance_note,
+        ],
+    })
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        ringkasan.to_excel(writer, sheet_name="Ringkasan", index=False, startrow=1)
+        alloc_matrix_df(p, sol.optimal).to_excel(writer, sheet_name="Alokasi Optimal", startrow=1)
+        route_df(p, sol.optimal).to_excel(writer, sheet_name="Rincian Rute", index=False, startrow=1)
+        steps_df(p, sol).to_excel(writer, sheet_name="Langkah", index=False, startrow=1)
+        s = writer.sheets
+        _style_ws(s["Ringkasan"], "Ringkasan Hasil — Metode Transportasi", "18181B")
+        _style_ws(s["Alokasi Optimal"], "Alokasi Optimal (unit dikirim)", "16A34A",
+                  highlight_inner=(p.m, p.n))
+        _style_ws(s["Rincian Rute"], "Rincian Biaya per Rute", "18181B")
+        _style_ws(s["Langkah"], "Langkah Optimasi (MODI)", "18181B")
+    return buf.getvalue()
+
+
+def comparison_df(problem: TransportationProblem) -> pd.DataFrame:
+    """Bandingkan ketiga metode solusi awal pada masalah yang sama."""
+    rows = []
+    for metode in METHODS:
+        s = solve(problem, method=metode)
+        rows.append({
+            "Metode": metode,
+            "Biaya awal": s.initial_cost,
+            "Biaya optimal": s.optimal_cost,
+            "Iterasi": len([it for it in s.iterations if not it.optimal]),
+        })
+    return pd.DataFrame(rows)
+
+
+def _esc(s) -> str:
+    return str(s).replace('"', "'")
+
+
+def flow_diagram_dot(problem: TransportationProblem, alloc) -> str:
+    """Bangun kode DOT (Graphviz) diagram aliran: sumber (kiri) → tujuan (kanan)."""
+    out = [
+        "digraph {",
+        'rankdir=LR; bgcolor="transparent"; nodesep=0.28; ranksep=1.3;',
+        'node [shape=box style="rounded,filled" fontname="Geist, sans-serif" fontsize=11 margin=0.14];',
+        'edge [fontname="Geist, sans-serif" fontsize=10 color="#a1a1aa" penwidth=1.2];',
+    ]
+    for i in range(problem.m):
+        out.append(
+            f'S{i} [label="{_esc(problem.sources[i])}\\n({problem.supply[i]:g})" '
+            'fillcolor="#f4f4f5" color="#e4e4e7"];'
+        )
+    for j in range(problem.n):
+        out.append(
+            f'D{j} [label="{_esc(problem.destinations[j])}\\n({problem.demand[j]:g})" '
+            'fillcolor="#18181b" fontcolor="#fafafa" color="#18181b"];'
+        )
+    for i in range(problem.m):
+        for j in range(problem.n):
+            q = alloc.alloc[i][j]
+            if q > 1e-9:
+                out.append(f'S{i} -> D{j} [label="{q:g}"];')
+    out.append("}")
+    return "\n".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# Render tabel
+# --------------------------------------------------------------------------- #
+def tabel_alokasi(problem: TransportationProblem, alloc, judul: str):
+    df = alloc_matrix_df(problem, alloc)
+
+    def sorot(val):
+        return (
+            "background-color:#dcfce7;color:#166534;font-weight:600"
+            if isinstance(val, (int, float)) and val > 1e-9 else ""
+        )
+
+    st.caption(judul)
+    # subset sudah mengecualikan baris/kolom margin (terakhir), jadi cukup sorot semua.
+    sty = df.style.apply(
+        lambda col: [sorot(v) for v in col],
+        axis=0, subset=(df.index[:-1], df.columns[:-1]),
+    ).format("{:g}")
+    st.dataframe(sty, width="stretch")
+
+
+def tabel_biaya_rute(problem: TransportationProblem, alloc):
+    df = route_df(problem, alloc)
     st.dataframe(
         df.style.format({"Jumlah": "{:g}", "Biaya/unit": "{:g}", "Subtotal": "{:g}"}),
         width="stretch", hide_index=True,
@@ -312,10 +493,17 @@ if st.button("Hitung Solusi Optimal", type="primary", width="stretch"):
             cost=[[float(c) for c in row] for row in st.session_state.cost],
         )
         problem.validate()
-        sol = solve(problem, method=st.session_state.metode)
+        st.session_state.sol = solve(problem, method=st.session_state.metode)
+        st.session_state.sol_error = ""
     except Exception as e:  # noqa: BLE001
-        ui.alert("destructive", "triangle-alert", "Input belum valid", str(e))
-        st.stop()
+        st.session_state.sol = None
+        st.session_state.sol_error = str(e)
+
+# Hasil disimpan di session_state agar TETAP tampil saat tombol unduh memicu rerun.
+if st.session_state.get("sol_error"):
+    ui.alert("destructive", "triangle-alert", "Input belum valid", st.session_state.sol_error)
+elif st.session_state.get("sol") is not None:
+    sol = st.session_state.sol
 
     st.divider()
     ui.alert("info", "info", "Penyeimbangan", sol.balance_note)
@@ -341,9 +529,28 @@ if st.button("Hitung Solusi Optimal", type="primary", width="stretch"):
             ui.alert("destructive", "triangle-alert", "Tidak cocok dengan scipy",
                      f"scipy = {ref['cost']}. Periksa kembali implementasi.")
 
-    tab1, tab2, tab3 = st.tabs(
-        [f"Solusi Awal ({sol.initial_method})", "Langkah Optimasi (MODI)", "Solusi Optimal"]
+    st.markdown("**Unduh hasil:**")
+    dl1, dl2, _sp = st.columns([1, 1, 2])
+    try:
+        dl1.download_button(
+            "Excel (.xlsx)", build_excel(sol), file_name="hasil_transportasi.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            width="stretch",
+        )
+    except Exception as e:  # noqa: BLE001
+        dl1.caption(f"Excel butuh paket openpyxl ({e}).")
+    dl2.download_button(
+        "CSV (alokasi)",
+        # utf-8-sig (BOM) agar Excel membaca karakter non-ASCII dengan benar;
+        # float_format="%g" agar bilangan bulat tampil "50" bukan "50.0".
+        alloc_matrix_df(sol.problem, sol.optimal).to_csv(float_format="%g").encode("utf-8-sig"),
+        file_name="alokasi_optimal.csv", mime="text/csv", width="stretch",
     )
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        f"Solusi Awal ({sol.initial_method})", "Langkah Optimasi (MODI)",
+        "Solusi Optimal", "Perbandingan Metode", "Diagram Aliran",
+    ])
     with tab1:
         tabel_alokasi(sol.problem, sol.initial, f"Alokasi awal — {sol.initial_method}")
         ui.metric("calculator", "Total biaya solusi awal", fmt(sol.initial_cost))
@@ -362,3 +569,17 @@ if st.button("Hitung Solusi Optimal", type="primary", width="stretch"):
         tabel_alokasi(sol.problem, sol.optimal, "Alokasi optimal")
         tabel_biaya_rute(sol.problem, sol.optimal)
         ui.metric("money", "Total biaya minimum", fmt(sol.optimal_cost), accent="green")
+    with tab4:
+        st.caption("Perbandingan ketiga metode solusi awal pada masalah yang sama "
+                   "(semuanya menuju biaya optimal yang identik).")
+        cmp = comparison_df(sol.original)
+        st.dataframe(
+            cmp.style.format({"Biaya awal": "{:g}", "Biaya optimal": "{:g}"}),
+            width="stretch", hide_index=True,
+        )
+        st.caption("Biaya solusi awal tiap metode (makin rendah makin dekat ke optimal):")
+        st.bar_chart(cmp.set_index("Metode")[["Biaya awal"]])
+    with tab5:
+        st.caption("Aliran distribusi optimal: sumber (kiri) → tujuan (kanan); "
+                   "angka pada panah = jumlah unit yang dikirim.")
+        st.graphviz_chart(flow_diagram_dot(sol.problem, sol.optimal))

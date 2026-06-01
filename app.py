@@ -187,6 +187,51 @@ def tampilkan_iterasi(problem: TransportationProblem, it):
 
 
 # --------------------------------------------------------------------------- #
+# Panel "Tentang" (edukatif)
+# --------------------------------------------------------------------------- #
+def render_about() -> None:
+    """Penjelasan formal: definisi Metode Transportasi, tiap metode, & verifikasi scipy."""
+    st.markdown(
+        "**Metode Transportasi** merupakan salah satu kasus khusus *Linear Programming* yang "
+        "bertujuan menentukan pola distribusi barang dari sejumlah **sumber** (misalnya pabrik "
+        "atau gudang) ke sejumlah **tujuan** (misalnya kota atau wilayah pemasaran) sedemikian "
+        "rupa sehingga **total biaya distribusi menjadi minimum**. Penyelesaian dilakukan dalam "
+        "dua tahap, yaitu penentuan **solusi layak awal**, kemudian **pengujian dan perbaikan** "
+        "hingga diperoleh solusi optimal."
+    )
+    st.markdown(
+        "| Metode | Tahap | Prinsip kerja |\n"
+        "|---|---|---|\n"
+        "| **North-West Corner (NWC)** | Solusi awal | Pengalokasian dimulai dari sel pojok kiri-atas tanpa mempertimbangkan biaya. Paling sederhana, namun solusi awalnya umumnya belum efisien. |\n"
+        "| **Least Cost** (Biaya Terkecil) | Solusi awal | Pengalokasian diprioritaskan pada sel dengan biaya satuan terkecil. Karena mempertimbangkan biaya, solusinya cenderung lebih baik daripada NWC. |\n"
+        "| **VAM** (*Vogel's Approximation Method*) | Solusi awal | Menggunakan nilai *penalti*, yaitu selisih dua biaya terkecil pada setiap baris/kolom; alokasi dilakukan pada baris/kolom dengan penalti terbesar. Umumnya menghasilkan solusi yang paling mendekati optimal. |\n"
+        "| **Stepping Stone** | Optimasi | Mengevaluasi setiap sel kosong melalui pembentukan lintasan tertutup untuk menghitung perubahan biaya, kemudian memindahkan alokasi. Bersifat intuitif dan visual. |\n"
+        "| **MODI** (*Modified Distribution*) | Optimasi | Menghitung nilai potensial uᵢ dan vⱼ, kemudian menentukan *opportunity cost* cᵢⱼ − (uᵢ + vⱼ) secara matematis. Lebih efisien dibandingkan Stepping Stone. |"
+    )
+    st.markdown(
+        "**Konsep pendukung.** *Keseimbangan:* total penawaran harus sama dengan total permintaan "
+        "(Σ supply = Σ demand); apabila tidak seimbang, ditambahkan baris atau kolom *dummy* "
+        "berbiaya nol. *Degenerasi:* solusi layak memerlukan tepat **m + n − 1** sel basis; "
+        "apabila kurang, disisipkan sel beralokasi nol. *Optimalitas:* solusi dinyatakan optimal "
+        "apabila seluruh *opportunity cost* sel kosong bernilai tak-negatif (≥ 0)."
+    )
+    ui.alert(
+        "info", "badge-check", "Verifikasi dengan Solver Linear Programming (scipy)",
+        "Masalah transportasi pada dasarnya merupakan bentuk khusus <b>Linear Programming (LP)</b>. "
+        "Aplikasi ini menyelesaikan kembali persoalan yang sama menggunakan "
+        "<code>scipy.optimize.linprog</code> sebagai pembanding independen. Apabila biaya optimal "
+        "hasil perhitungan manual (MODI) identik dengan hasil solver LP tersebut, sistem "
+        "menampilkan penanda <b>Terverifikasi</b> sebagai konfirmasi atas kebenaran algoritma."
+    )
+
+
+@st.dialog("Tentang Metode Transportasi", width="large")
+def about_dialog() -> None:
+    """Tampilkan penjelasan metode & verifikasi sebagai pop-up modal."""
+    render_about()
+
+
+# --------------------------------------------------------------------------- #
 # Halaman
 # --------------------------------------------------------------------------- #
 init_state()
@@ -215,6 +260,11 @@ with st.sidebar:
         "Ubah / tambah baris pada tabel Sumber & Tujuan, isi biaya angkut, "
         "lalu tekan Hitung Solusi Optimal."
     )
+    open_about = st.button("Tentang metode & Solver LP", width="stretch", key="btn_about")
+
+# Pop-up (modal) penjelasan metode & verifikasi scipy, dipicu dari tombol sidebar.
+if open_about:
+    about_dialog()
 
 ui.section("package", "Sumber (asal) & kapasitas", "Langkah 1 — daftar pabrik/gudang dan kapasitasnya")
 src_df = st.data_editor(

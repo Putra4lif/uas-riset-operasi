@@ -1,0 +1,14 @@
+{
+  "judul": "PT Sentosa Beton - Distribusi Semen",
+  "satuan_biaya": "ribu Rupiah per ton",
+  "satuan_jumlah": "ton",
+  "sources": ["Surabaya", "Semarang", "Bandung"],
+  "destinations": ["Jakarta", "Yogyakarta", "Denpasar", "Medan"],
+  "supply": [300, 400, 500],
+  "demand": [250, 350, 400, 200],
+  "cost": [
+    [8, 6, 10, 9],
+    [9, 12, 13, 7],
+    [14, 9, 16, 5]
+  ]
+}

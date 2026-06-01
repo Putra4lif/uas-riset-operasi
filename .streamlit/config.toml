@@ -1,0 +1,12 @@
+# Tema bergaya shadcn (palet netral zinc, terang).
+[theme]
+base = "light"
+primaryColor = "#18181b"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f4f4f5"
+textColor = "#09090b"
+borderColor = "#e4e4e7"
+font = "sans-serif"
+
+[browser]
+gatherUsageStats = false
